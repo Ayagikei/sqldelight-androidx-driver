@@ -30,7 +30,12 @@ internal class AndroidxSqliteExecutingDriver(
       null -> connectionPool.acquireWriterConnection()
       else -> enclosing.connection
     }
-    val transaction = Transaction(enclosing, transactionConnection)
+    val transaction = try {
+      Transaction(enclosing, transactionConnection)
+    } catch(t: Throwable) {
+      if(enclosing == null) connectionPool.releaseWriterConnection()
+      throw t
+    }
 
     transactions.set(transaction)
 
@@ -125,21 +130,27 @@ internal class AndroidxSqliteExecutingDriver(
     mapper: (SqlCursor) -> QueryResult<R>,
     parameters: Int,
     binders: (SqlPreparedStatement.() -> Unit)?,
-  ) = connectionPool.setJournalMode { connection ->
-    executeStatement(
-      identifier = null,
-      isStatementCacheSkipped = true,
-      connection = connection,
-      createStatement = { c ->
-        AndroidxQuery(
-          sql = sql,
-          statement = c.prepare(sql),
-          argCount = parameters,
-        )
-      },
-      binders = binders,
-      result = { executeQuery(mapper) },
-    )
+  ): QueryResult.Value<R> {
+    check(currentTransaction() == null) {
+      "setJournalMode cannot be called from within a transaction"
+    }
+
+    return connectionPool.setJournalMode { connection ->
+      executeStatement(
+        identifier = null,
+        isStatementCacheSkipped = true,
+        connection = connection,
+        createStatement = { c ->
+          AndroidxQuery(
+            sql = sql,
+            statement = c.prepare(sql),
+            argCount = parameters,
+          )
+        },
+        binders = binders,
+        result = { executeQuery(mapper) },
+      )
+    }
   }
 
   private fun <T> executeStatement(
@@ -238,18 +249,31 @@ internal class AndroidxSqliteExecutingDriver(
     }
 
     override fun endTransaction(successful: Boolean): QueryResult<Unit> {
-      if(enclosingTransaction == null) {
-        try {
-          if(successful) {
-            connection.execSQL("COMMIT")
-          } else {
-            connection.execSQL("ROLLBACK")
+      try {
+        if(enclosingTransaction == null) {
+          val endStatement = if(successful) "COMMIT" else "ROLLBACK"
+          try {
+            connection.execSQL(endStatement)
+          } catch(endFailure: Throwable) {
+            try {
+              connection.execSQL("ROLLBACK")
+            } catch(recoveryFailure: Throwable) {
+              if(recoveryFailure !== endFailure) endFailure.addSuppressed(recoveryFailure)
+              try {
+                connectionPool.invalidateWriterConnection(endFailure)
+              } catch(invalidationFailure: Throwable) {
+                if(invalidationFailure !== endFailure) endFailure.addSuppressed(invalidationFailure)
+              }
+            }
+            throw endFailure
           }
-        } finally {
+        }
+      } finally {
+        transactions.set(enclosingTransaction)
+        if(enclosingTransaction == null) {
           connectionPool.releaseWriterConnection()
         }
       }
-      transactions.set(enclosingTransaction)
       return QueryResult.Unit
     }
   }

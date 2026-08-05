@@ -15,13 +15,17 @@ import kotlin.native.concurrent.Worker
 import kotlin.test.assertFailsWith
 
 actual class CommonCallbackTest : AndroidxSqliteCallbackTest()
+actual class CommonConnectionPoolSetJournalModeTest : AndroidxDriverConnectionPoolSetJournalModeTest()
+actual class CommonConnectionPoolTest : AndroidxDriverConnectionPoolTest()
 actual class CommonConcurrencyTest : AndroidxSqliteConcurrencyTest()
 actual class CommonCreationTest : AndroidxSqliteCreationTest()
 actual class CommonDriverTest : AndroidxSqliteDriverTest()
 actual class CommonDriverOpenFlagsTest : AndroidxSqliteDriverOpenFlagsTest()
 actual class CommonEphemeralTest : AndroidxSqliteEphemeralTest()
+actual class CommonLifecycleRegressionTest : AndroidxSqliteLifecycleRegressionTest()
 actual class CommonMigrationTest : AndroidxSqliteMigrationTest()
 actual class CommonQueryTest : AndroidxSqliteQueryTest()
+actual class CommonSyncApiTest : AndroidxSqliteSyncApiTest()
 actual class CommonTransacterTest : AndroidxSqliteTransacterTest()
 
 actual fun androidxSqliteTestDriver(): SQLiteDriver = BundledSQLiteDriver()

@@ -45,8 +45,8 @@ dependencyResolutionManagement {
 }
 
 plugins {
-  id("com.eygraber.conventions.settings") version "0.0.89"
-  id("com.gradle.develocity") version "4.2.2"
+  id("com.eygraber.conventions.settings") version "0.0.100"
+  id("com.gradle.develocity") version "4.5.0"
 }
 
 rootProject.name = "sqldelight-androidx-driver"

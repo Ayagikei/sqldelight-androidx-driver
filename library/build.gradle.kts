@@ -1,55 +1,80 @@
+import org.gradle.plugins.signing.SigningExtension
+
 plugins {
+  id("com.android.lint")
   id("com.eygraber.conventions-kotlin-multiplatform")
-  id("com.eygraber.conventions-android-library")
-  id("com.eygraber.conventions-detekt")
+  id("com.eygraber.conventions-android-kmp-library")
+  id("com.eygraber.conventions-detekt2")
   id("com.eygraber.conventions-publish-maven-central")
-  alias(libs.plugins.atomicfu)
 }
 
-android {
-  namespace = "com.eygraber.sqldelight.androidx.driver"
-
-  defaultConfig {
-    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-  }
-
-  testOptions {
-    @Suppress("UnstableApiUsage")
-    managedDevices {
-      localDevices {
-        create("pixel2Api35") {
-          device = "Pixel 2"
-          apiLevel = 35
-          testedAbi = "x86_64"
-          systemImageSource = "aosp-atd"
-        }
-      }
+val requestedTaskNames = gradle.startParameter.taskNames
+val isMavenLocalOnlyPublication =
+  requestedTaskNames.any { it.endsWith("ToMavenLocal") } &&
+    requestedTaskNames.none { taskName ->
+      taskName == "publish" ||
+        taskName.endsWith(":publish") ||
+        taskName.contains("MavenCentral") ||
+        taskName.contains("Repository")
     }
+
+plugins.withId("signing") {
+  extensions.configure<SigningExtension> {
+    setRequired(!isMavenLocalOnlyPublication)
   }
 }
 
 kotlin {
   defaultKmpTargets(
     project = project,
+    androidNamespace = "com.eygraber.sqldelight.androidx.driver",
   )
 
+  android {
+    withHostTest {}
+
+    withDeviceTest {
+      instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+      managedDevices {
+        localDevices {
+          create("pixel2Api35") {
+            device = "Pixel 2"
+            apiLevel = 35
+            testedAbi = "x86_64"
+            systemImageSource = "aosp-atd"
+          }
+        }
+      }
+    }
+  }
+
   sourceSets {
-    androidMain.dependencies {
-      implementation(libs.atomicfu)
+    named("androidDeviceTest") {
+      kotlin.srcDir("src/androidInstrumentedTest/kotlin")
+
+      dependencies {
+        implementation(libs.androidx.sqliteFramework)
+
+        implementation(libs.test.junit)
+        implementation(libs.test.androidx.core)
+        implementation(libs.test.androidx.runner)
+
+        implementation(libs.test.kotlin)
+        implementation(libs.test.kotlinx.coroutines)
+      }
     }
 
-    androidInstrumentedTest.dependencies {
-      implementation(libs.test.junit)
-      implementation(libs.test.androidx.core)
-      implementation(libs.test.androidx.runner)
-    }
+    named("androidHostTest") {
+      kotlin.srcDir("src/androidUnitTest/kotlin")
 
-    androidUnitTest.dependencies {
-      implementation(libs.androidx.sqliteFramework)
+      dependencies {
+        implementation(libs.androidx.sqliteFramework)
 
-      implementation(libs.test.junit)
-      implementation(libs.test.androidx.core)
-      implementation(libs.test.robolectric)
+        implementation(libs.test.junit)
+        implementation(libs.test.androidx.core)
+        implementation(libs.test.robolectric)
+      }
     }
 
     commonMain.dependencies {
@@ -58,6 +83,7 @@ kotlin {
       api(libs.androidx.sqlite)
       api(libs.cashapp.sqldelight.runtime)
 
+      implementation(libs.atomicfu)
       implementation(libs.kotlinx.coroutines.core)
     }
 

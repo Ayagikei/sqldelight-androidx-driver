@@ -1,21 +1,25 @@
-# SqlDelight AndroidX Driver
+# SQLDelight AndroidX Synchronous Driver
 
-`sqldelight-androidx-driver` provides a [SQLDelight] `SqlDriver` that wraps the [AndroidX Kotlin Multiplatform SQLite]
-libraries.
+`sqldelight-androidx-driver-sync` provides a synchronous [SQLDelight] `SqlDriver` that wraps the [AndroidX Kotlin
+Multiplatform SQLite] libraries.
 
 It works with any of the available implementations of AndroidX SQLite; see their documentation for more information.
 
 ## Gradle
 
 ```kotlin
-repositories {
-  mavenCentral()
-}
+implementation("io.github.ayagikei:sqldelight-androidx-driver-sync:0.1.0")
+implementation("androidx.sqlite:sqlite-bundled:2.7.0")
 
-dependencies {
-  implementation("com.eygraber:sqldelight-androidx-driver:0.0.16")
-}
+val driver: SqlDriver = AndroidxSqliteDriver(
+  driver = BundledSQLiteDriver(),
+  databaseType = AndroidxSqliteDatabaseType.FileProvider(context, "app.db"),
+  schema = Database.Schema,
+)
 ```
+
+SQLDelight's `generateAsync` must remain at its default `false`; this driver exposes synchronous `SqlDriver` APIs.
+Database callers remain responsible for switching database work to an IO dispatcher.
 
 Snapshots can be found [here](https://central.sonatype.org/publish/publish-portal-snapshots/#consuming-via-gradle).
 
@@ -36,7 +40,7 @@ you get started by creating a `AndroidxSqliteDriver`:
 Database(
   AndroidxSqliteDriver(
     driver = BundledSQLiteDriver(),
-    type = AndroidxSqliteDatabaseType.File("<absolute path to db file>"),
+    databaseType = AndroidxSqliteDatabaseType.File("<absolute path to db file>"),
     schema = Database.Schema,
   )
 )
@@ -48,7 +52,7 @@ on Android and JVM you can pass a `File`:
 Database(
   AndroidxSqliteDriver(
     driver = BundledSQLiteDriver(),
-    type = AndroidxSqliteDatabaseType.File(File("my.db")),
+    databaseType = AndroidxSqliteDatabaseType.File(File("my.db")),
     schema = Database.Schema,
   )
 )
@@ -60,7 +64,7 @@ and on Android you can pass a `Context` to create the file in the app's database
 Database(
   AndroidxSqliteDriver(
     driver = BundledSQLiteDriver(),
-    type = AndroidxSqliteDatabaseType.FileProvider(context, "my.db"),
+    databaseType = AndroidxSqliteDatabaseType.FileProvider(context, "my.db"),
     schema = Database.Schema,
   )
 )
@@ -71,13 +75,13 @@ If you want to provide `OpenFlags` to the bundled or native driver, you can use:
 ```kotlin
 Database(
   AndroidxSqliteDriver(
-    connectionFactory = object : AndroidxConnectionFactory {
+    connectionFactory = object : AndroidxSqliteConnectionFactory {
       override val driver = BundledSQLiteDriver()
       
       override fun createConnection(name: String) =
         driver.open(name, SQLITE_OPEN_READWRITE or SQLITE_OPEN_CREATE)
     },
-    type = AndroidxSqliteDatabaseType.File("<absolute path to db file>"),
+    databaseType = AndroidxSqliteDatabaseType.File("<absolute path to db file>"),
     schema = Database.Schema,
   )
 )

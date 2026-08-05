@@ -17,6 +17,15 @@ import java.util.concurrent.Semaphore
 actual class CommonCallbackTest : AndroidxSqliteCallbackTest()
 
 @RunWith(RobolectricTestRunner::class)
+actual class CommonConnectionPoolSetJournalModeTest : AndroidxDriverConnectionPoolSetJournalModeTest() {
+  override val realJournalInitialMode = SqliteJournalMode.Delete
+  override val realJournalTargetMode = SqliteJournalMode.WAL
+}
+
+@RunWith(RobolectricTestRunner::class)
+actual class CommonConnectionPoolTest : AndroidxDriverConnectionPoolTest()
+
+@RunWith(RobolectricTestRunner::class)
 actual class CommonConcurrencyTest : AndroidxSqliteConcurrencyTest()
 
 @RunWith(RobolectricTestRunner::class)
@@ -47,10 +56,16 @@ actual class CommonDriverOpenFlagsTest : AndroidxSqliteDriverOpenFlagsTest()
 actual class CommonEphemeralTest : AndroidxSqliteEphemeralTest()
 
 @RunWith(RobolectricTestRunner::class)
+actual class CommonLifecycleRegressionTest : AndroidxSqliteLifecycleRegressionTest()
+
+@RunWith(RobolectricTestRunner::class)
 actual class CommonMigrationTest : AndroidxSqliteMigrationTest()
 
 @RunWith(RobolectricTestRunner::class)
 actual class CommonQueryTest : AndroidxSqliteQueryTest()
+
+@RunWith(RobolectricTestRunner::class)
+actual class CommonSyncApiTest : AndroidxSqliteSyncApiTest()
 
 @RunWith(RobolectricTestRunner::class)
 actual class CommonTransacterTest : AndroidxSqliteTransacterTest()

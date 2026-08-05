@@ -7,14 +7,23 @@ import androidx.sqlite.execSQL
 import app.cash.sqldelight.db.QueryResult
 import com.eygraber.sqldelight.androidx.driver.AndroidxSqliteConcurrencyModel.MultipleReadersSingleWriter
 import com.eygraber.sqldelight.androidx.driver.AndroidxSqliteConcurrencyModel.SingleReaderWriter
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class ConnectionPoolTest {
   @Test
-  fun `AndroidxDriverConnectionPool setJournalMode with WAL updates concurrency model`() {
+  fun `AndroidxDriverConnectionPool setJournalMode with WAL updates concurrency model`() = runBlocking {
     val testConnectionFactory = TestConnectionFactory()
     val configuration = AndroidxSqliteConfiguration(
       concurrencyModel = MultipleReadersSingleWriter(isWal = false, walCount = 2, nonWalCount = 0),
@@ -27,27 +36,22 @@ class ConnectionPoolTest {
       configuration = configuration,
     )
 
-    val result = pool.setJournalMode { connection ->
-      // Simulate a journal mode query returning "wal"
-      QueryResult.Value("wal")
+    try {
+      val result = pool.setJournalMode { connection ->
+        connection.executeJournalModeChange("wal")
+      }
+
+      assertEquals("wal", result.value)
+      assertEquals("wal", testConnectionFactory.journalMode)
+
+      // After setting WAL mode, we should be able to get reader connections
+      // that are different from the writer connection
+      pool.assertReaderAndWriterAreDifferent(
+        message = "In WAL mode, reader connection should be different from writer connection",
+      )
+    } finally {
+      pool.close()
     }
-
-    assertEquals("wal", result.value)
-
-    // After setting WAL mode, we should be able to get reader connections
-    // that are different from the writer connection
-    val readerConnection = pool.acquireReaderConnection()
-    val writerConnection = pool.acquireWriterConnection()
-
-    // In WAL mode with multiple readers, reader should be different from writer
-    assertTrue(
-      readerConnection !== writerConnection,
-      "In WAL mode, reader connection should be different from writer connection",
-    )
-
-    pool.releaseReaderConnection(readerConnection)
-    pool.releaseWriterConnection()
-    pool.close()
   }
 
   @Test
@@ -65,11 +69,11 @@ class ConnectionPoolTest {
     )
 
     val result = pool.setJournalMode { connection ->
-      // Simulate a journal mode query returning "delete" (non-WAL)
-      QueryResult.Value("delete")
+      connection.executeJournalModeChange("Delete")
     }
 
-    assertEquals("delete", result.value)
+    assertEquals("Delete", result.value)
+    assertEquals("Delete", testConnectionFactory.journalMode)
 
     // After setting DELETE mode, readers should fall back to writer connection
     pool.assertReaderAndWriterAreTheSame(
@@ -80,7 +84,7 @@ class ConnectionPoolTest {
   }
 
   @Test
-  fun `AndroidxDriverConnectionPool setJournalMode handles case insensitive WAL detection`() {
+  fun `AndroidxDriverConnectionPool setJournalMode handles case insensitive WAL detection`() = runBlocking {
     val testConnectionFactory = TestConnectionFactory()
     val configuration = AndroidxSqliteConfiguration(
       concurrencyModel = MultipleReadersSingleWriter(isWal = false, walCount = 2, nonWalCount = 0),
@@ -96,25 +100,22 @@ class ConnectionPoolTest {
     // Test case insensitive matching for different WAL variations
     val walVariations = listOf("WAL", "wal", "Wal", "wAL")
 
-    for(walMode in walVariations) {
-      pool.setJournalMode { connection ->
-        QueryResult.Value(walMode)
+    try {
+      for(walMode in walVariations) {
+        val result = pool.setJournalMode { connection ->
+          connection.executeJournalModeChange(walMode)
+        }
+        assertEquals(walMode, result.value)
+        assertEquals(walMode, testConnectionFactory.journalMode)
+
+        // Each time, we should be able to get reader connections (indicating WAL mode was detected)
+        pool.assertReaderAndWriterAreDifferent(
+          message = "WAL mode should be detected case-insensitively for: $walMode",
+        )
       }
-
-      // Each time, we should be able to get reader connections (indicating WAL mode was detected)
-      val readerConnection = pool.acquireReaderConnection()
-      val writerConnection = pool.acquireWriterConnection()
-
-      assertTrue(
-        readerConnection !== writerConnection,
-        "WAL mode should be detected case-insensitively for: $walMode",
-      )
-
-      pool.releaseReaderConnection(readerConnection)
-      pool.releaseWriterConnection()
+    } finally {
+      pool.close()
     }
-
-    pool.close()
   }
 
   @Test
@@ -132,10 +133,11 @@ class ConnectionPoolTest {
     )
 
     val result = pool.setJournalMode { connection ->
-      QueryResult.Value("wal")
+      connection.executeJournalModeChange("wal")
     }
 
     assertEquals("wal", result.value)
+    assertEquals("wal", testConnectionFactory.journalMode)
 
     // With SingleReaderWriter, reader and writer should always be the same
     pool.assertReaderAndWriterAreTheSame(
@@ -159,9 +161,11 @@ class ConnectionPoolTest {
       configuration = configuration,
     )
 
-    pool.setJournalMode { connection ->
-      QueryResult.Value("wal")
+    val result = pool.setJournalMode { connection ->
+      connection.executeJournalModeChange("wal")
     }
+    assertEquals("wal", result.value)
+    assertEquals("wal", testConnectionFactory.journalMode)
 
     // Even with WAL mode and MultipleReadersSingleWriter config,
     // in-memory databases should use SingleReaderWriter behavior
@@ -203,9 +207,11 @@ class ConnectionPoolTest {
     }
 
     // Change journal mode - this should close existing readers and create new ones
-    pool.setJournalMode { connection ->
-      QueryResult.Value("delete") // Switch to non-WAL mode
+    val result = pool.setJournalMode { connection ->
+      connection.executeJournalModeChange("delete")
     }
+    assertEquals("delete", result.value)
+    assertEquals("delete", testConnectionFactory.journalMode)
 
     // Verify that some connections were closed during the journal mode change
     assertTrue(
@@ -230,10 +236,11 @@ class ConnectionPoolTest {
     )
 
     val result = pool.setJournalMode { connection ->
-      QueryResult.Value("wal")
+      connection.executeJournalModeChange("wal")
     }
 
     assertEquals("wal", result.value)
+    assertEquals("wal", testConnectionFactory.journalMode)
 
     // Verify that at least one connection was created and used
     assertTrue(testConnectionFactory.createdConnections.isNotEmpty(), "Should have created at least one connection")
@@ -256,10 +263,11 @@ class ConnectionPoolTest {
 
     for(mode in testJournalModes) {
       val result = pool.setJournalMode { connection ->
-        QueryResult.Value(mode)
+        connection.executeJournalModeChange(mode)
       }
 
       assertEquals(mode, result.value, "Should return the correct journal mode: $mode")
+      assertEquals(mode, testConnectionFactory.journalMode)
     }
 
     pool.close()
@@ -304,6 +312,7 @@ class ConnectionPoolTest {
     }
 
     assertEquals("wal", result.value)
+    assertEquals("WAL", factory.journalMode)
 
     // The connection should have been created during the setJournalMode call
     assertTrue(factory.createdConnections.isNotEmpty(), "At least one connection should have been created")
@@ -327,6 +336,7 @@ class ConnectionPoolTest {
     }
 
     assertEquals("delete", result.value)
+    assertEquals("DELETE", factory.journalMode)
 
     assertTrue(factory.createdConnections.isNotEmpty(), "At least one connection should have been created")
     val connection = factory.createdConnections.first()
@@ -444,17 +454,116 @@ class ConnectionPoolTest {
     assertTrue(callbackConnection != null)
     assertTrue(callbackConnection is TestConnection)
   }
+
+  @Test
+  fun `different reader writer assertion fails bounded and releases the shared writer`() = runBlocking {
+    val pool = AndroidxDriverConnectionPool(
+      connectionFactory = TestConnectionFactory(),
+      nameProvider = { "test.db" },
+      isFileBased = true,
+      configuration = AndroidxSqliteConfiguration(concurrencyModel = SingleReaderWriter),
+    )
+
+    val failure = withTimeout(2_000) {
+      try {
+        pool.assertReaderAndWriterAreDifferent("Expected distinct connections")
+        null
+      } catch(t: AssertionError) {
+        t
+      }
+    }
+
+    assertNotNull(failure)
+    assertContains(failure.message.orEmpty(), "writer acquisition timed out")
+    pool.close()
+  }
+
+  @Test
+  fun `reader waiting for capacity fails closed after writer invalidation`() = runBlocking {
+    val readerWaiting = CompletableDeferred<Unit>()
+    val pool = AndroidxDriverConnectionPool(
+      connectionFactory = TestConnectionFactory(),
+      nameProvider = { "test.db" },
+      isFileBased = true,
+      configuration = AndroidxSqliteConfiguration(
+        concurrencyModel = MultipleReadersSingleWriter(isWal = true, walCount = 1),
+      ),
+      onReaderConnectionWait = { readerWaiting.complete(Unit) },
+    )
+    val writer = pool.acquireWriterConnection()
+    pool.releaseWriterConnection()
+    val checkedOutReader = pool.acquireReaderConnection()
+    val queuedAcquire = async(IoDispatcher) {
+      runCatching { pool.acquireReaderConnection() }
+    }
+    withTimeout(500) { readerWaiting.await() }
+    val terminalCause = IllegalStateException("transaction recovery failed")
+
+    pool.invalidateWriterConnection(terminalCause)
+    pool.releaseReaderConnection(checkedOutReader)
+    val result = withTimeout(500) { queuedAcquire.await() }
+    result.getOrNull()?.let(pool::releaseReaderConnection)
+
+    val failure = assertNotNull(result.exceptionOrNull())
+    assertContains(requireNotNull(failure.message), "unusable after failed transaction recovery")
+    assertTrue(failure.cause === terminalCause)
+    assertTrue(writer.isClosedForTest())
+    pool.close()
+  }
+
+  @Test
+  fun `passthrough acquire rechecks terminal after waiting for holder lock`() = runBlocking {
+    val connectionCreationEntered = CompletableDeferred<Unit>()
+    val allowConnectionCreation = CompletableDeferred<Unit>()
+    val terminalFailureSet = CompletableDeferred<Unit>()
+    val pool = PassthroughConnectionPool(
+      connectionFactory = BlockingTestConnectionFactory(
+        connectionCreationEntered = connectionCreationEntered,
+        allowConnectionCreation = allowConnectionCreation,
+      ),
+      nameProvider = { "test.db" },
+      configuration = AndroidxSqliteConfiguration(),
+      onTerminalFailureSet = { terminalFailureSet.complete(Unit) },
+    )
+    val queuedAcquire = async(IoDispatcher) {
+      runCatching { pool.acquireWriterConnection() }
+    }
+    withTimeout(500) { connectionCreationEntered.await() }
+    val terminalCause = IllegalStateException("transaction recovery failed")
+    val invalidation = async(IoDispatcher) {
+      pool.invalidateWriterConnection(terminalCause)
+    }
+    withTimeout(500) { terminalFailureSet.await() }
+
+    allowConnectionCreation.complete(Unit)
+    val result = withTimeout(500) { queuedAcquire.await() }
+    withTimeout(500) { invalidation.await() }
+
+    val acquiredConnection = result.getOrNull()
+    val failure = result.exceptionOrNull()
+    assertTrue(acquiredConnection == null, "Acquire must not publish a connection after terminal invalidation")
+    assertNotNull(failure)
+    assertContains(requireNotNull(failure.message), "unusable after failed transaction recovery")
+    assertTrue(failure.cause === terminalCause)
+    pool.close()
+  }
 }
 
 private fun ConnectionPool.assertReaderAndWriterAreTheSame(
   message: String,
 ) {
   val readerConnection = acquireReaderConnection()
-  val readerHashCode = readerConnection.hashCode()
-  releaseReaderConnection(readerConnection)
+  val readerHashCode = try {
+    readerConnection.hashCode()
+  } finally {
+    releaseReaderConnection(readerConnection)
+  }
   val writerConnection = acquireWriterConnection()
-  val writerHashCode = writerConnection.hashCode()
-  releaseWriterConnection()
+  val writerHashCode = try {
+    writerConnection.hashCode()
+  } finally {
+    releaseWriterConnection()
+  }
 
   assertTrue(
     readerHashCode == writerHashCode,
@@ -462,7 +571,57 @@ private fun ConnectionPool.assertReaderAndWriterAreTheSame(
   )
 }
 
-private class TestStatement : SQLiteStatement {
+private suspend fun ConnectionPool.assertReaderAndWriterAreDifferent(
+  message: String,
+) = coroutineScope {
+  val readerConnection = acquireReaderConnection()
+  val writerAcquired = CompletableDeferred<SQLiteConnection>()
+  val allowWriterRelease = CompletableDeferred<Unit>()
+  val writerAcquire = async(IoDispatcher) {
+    val writer = acquireWriterConnection()
+    try {
+      writerAcquired.complete(writer)
+      allowWriterRelease.await()
+      writer
+    } finally {
+      releaseWriterConnection()
+    }
+  }
+  var readerReleased = false
+
+  try {
+    val writerConnection = withTimeoutOrNull(500) {
+      writerAcquired.await()
+    }
+
+    if(writerConnection == null) {
+      releaseReaderConnection(readerConnection)
+      readerReleased = true
+      withTimeout(500) {
+        writerAcquired.await()
+      }
+      fail("$message; writer acquisition timed out after the reader was acquired")
+    }
+
+    assertTrue(readerConnection !== writerConnection, message)
+  } finally {
+    try {
+      if(!readerReleased) releaseReaderConnection(readerConnection)
+    } finally {
+      allowWriterRelease.complete(Unit)
+      withTimeout(500) { writerAcquire.await() }
+    }
+  }
+}
+
+private fun SQLiteConnection.executeJournalModeChange(mode: String): QueryResult.Value<String> {
+  execSQL("PRAGMA journal_mode = $mode;")
+  return QueryResult.Value(mode)
+}
+
+private class TestStatement(
+  private val onStep: (() -> Unit)? = null,
+) : SQLiteStatement {
   var stepCalled = false
   var booleanResult = false
   var textResult = ""
@@ -470,6 +629,7 @@ private class TestStatement : SQLiteStatement {
   var doubleResult = 0.0
 
   override fun step(): Boolean {
+    onStep?.invoke()
     stepCalled = true
     return true
   }
@@ -493,7 +653,13 @@ private class TestStatement : SQLiteStatement {
   override fun reset() {}
 }
 
-private class TestConnection : SQLiteConnection {
+private class TestDatabaseState(
+  var journalMode: String = "delete",
+)
+
+private class TestConnection(
+  private val databaseState: TestDatabaseState = TestDatabaseState(),
+) : SQLiteConnection {
   var isClosed = false
   val executedStatements = mutableListOf<String>()
   private val preparedStatements = mutableMapOf<String, TestStatement>()
@@ -505,6 +671,17 @@ private class TestConnection : SQLiteConnection {
 
   override fun prepare(sql: String): SQLiteStatement {
     executedStatements.add("PREPARE: $sql")
+    if(sql.trim().equals("PRAGMA journal_mode;", ignoreCase = true)) {
+      return TestStatement().apply { textResult = databaseState.journalMode }
+    }
+
+    journalModeAssignment.matchEntire(sql)?.let { match ->
+      val mode = match.groupValues[1]
+      return TestStatement(onStep = { databaseState.journalMode = mode }).apply {
+        textResult = mode
+      }
+    }
+
     return preparedStatements[sql] ?: TestStatement()
   }
 
@@ -514,17 +691,45 @@ private class TestConnection : SQLiteConnection {
   }
 }
 
-private class TestConnectionFactory : AndroidxSqliteConnectionFactory {
+private fun SQLiteConnection.isClosedForTest(): Boolean = (this as TestConnection).isClosed
+
+private class BlockingTestConnectionFactory(
+  private val connectionCreationEntered: CompletableDeferred<Unit>,
+  private val allowConnectionCreation: CompletableDeferred<Unit>,
+) : AndroidxSqliteConnectionFactory {
+  private val databaseState = TestDatabaseState()
+
   override val driver = object : SQLiteDriver {
-    override fun open(fileName: String): SQLiteConnection = TestConnection()
+    override fun open(fileName: String): SQLiteConnection = TestConnection(databaseState)
   }
-  val createdConnections = mutableListOf<TestConnection>()
 
   override fun createConnection(name: String): SQLiteConnection {
-    val connection = TestConnection().apply {
+    connectionCreationEntered.complete(Unit)
+    runBlocking { allowConnectionCreation.await() }
+    return TestConnection(databaseState).apply {
+      setPragmaResult("PRAGMA foreign_keys;", false)
+    }
+  }
+}
+
+private class TestConnectionFactory : AndroidxSqliteConnectionFactory {
+  private val databaseState = TestDatabaseState()
+
+  override val driver = object : SQLiteDriver {
+    override fun open(fileName: String): SQLiteConnection = TestConnection(databaseState)
+  }
+  val createdConnections = mutableListOf<TestConnection>()
+  val journalMode: String
+    get() = databaseState.journalMode
+
+  override fun createConnection(name: String): SQLiteConnection {
+    val connection = TestConnection(databaseState).apply {
       setPragmaResult("PRAGMA foreign_keys;", false) // Default: foreign keys disabled
     }
     createdConnections.add(connection)
     return connection
   }
 }
+
+private val journalModeAssignment =
+  Regex("""^\s*PRAGMA\s+journal_mode\s*=\s*([A-Za-z]+)\s*;?\s*$""", RegexOption.IGNORE_CASE)

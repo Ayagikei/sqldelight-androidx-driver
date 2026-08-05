@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 abstract class AndroidxSqliteMigrationTest {
@@ -120,6 +121,7 @@ abstract class AndroidxSqliteMigrationTest {
       isForeignKeyConstraintsEnabled = true,
     ),
     migrateEmptySchema: Boolean = false,
+    migrationCallbacks: Array<out AfterVersion> = emptyArray(),
     test: SqlDriver.() -> Unit,
   ) {
     val fullDbName = "${this::class.qualifiedName}.$dbName.db"
@@ -141,6 +143,7 @@ abstract class AndroidxSqliteMigrationTest {
         onUpdate = onUpdate,
         onOpen = onOpen,
         migrateEmptySchema = migrateEmptySchema,
+        migrationCallbacks = migrationCallbacks,
       ).apply {
         test()
         close()
@@ -158,6 +161,80 @@ abstract class AndroidxSqliteMigrationTest {
 
   protected open fun createDatabaseType(fullDbName: String): AndroidxSqliteDatabaseType =
     AndroidxSqliteDatabaseType.File(fullDbName)
+
+  @Test
+  fun `native after version callbacks run in order before onUpdate`() {
+    val dbName = Random.nextULong().toHexString()
+    val callbacks = mutableListOf<Long>()
+    var callbacksAtUpdate = emptyList<Long>()
+    var receivedCallbacks = emptyList<AfterVersion>()
+    val expectedCallbacks = arrayOf(
+      AfterVersion(1) { callbacks += 1L },
+      AfterVersion(2) { callbacks += 2L },
+      AfterVersion(3) { callbacks += 3L },
+    )
+    val schema = object : SqlSchema<QueryResult.Value<Unit>> {
+      override var version = 1L
+
+      override fun create(driver: SqlDriver) = QueryResult.Unit
+
+      override fun migrate(
+        driver: SqlDriver,
+        oldVersion: Long,
+        newVersion: Long,
+        vararg callbacks: AfterVersion,
+      ): QueryResult.Value<Unit> {
+        receivedCallbacks = callbacks.toList()
+        assertEquals(expectedCallbacks.size, callbacks.size)
+        expectedCallbacks.indices.forEach { index ->
+          assertSame(expectedCallbacks[index], callbacks[index])
+        }
+
+        for(version in oldVersion until newVersion) {
+          receivedCallbacks
+            .filter { it.afterVersion == version }
+            .forEach { it.block(driver) }
+        }
+        return QueryResult.Unit
+      }
+    }
+
+    withDatabase(
+      schema = schema,
+      dbName = dbName,
+      onCreate = {},
+      onUpdate = { _, _ -> },
+      onOpen = {},
+      onConfigure = {},
+      deleteDbAfterRun = false,
+    ) {
+      execute(null, "PRAGMA user_version", 0)
+    }
+
+    schema.version = 4L
+    withDatabase(
+      schema = schema,
+      dbName = dbName,
+      onCreate = {},
+      onUpdate = { oldVersion, newVersion ->
+        assertEquals(1L, oldVersion)
+        assertEquals(4L, newVersion)
+        callbacksAtUpdate = callbacks.toList()
+      },
+      onOpen = {},
+      onConfigure = {},
+      deleteDbBeforeRun = false,
+      migrationCallbacks = expectedCallbacks,
+    ) {
+      execute(null, "PRAGMA user_version", 0)
+    }
+
+    assertEquals(listOf(1L, 2L, 3L), callbacks)
+    assertEquals(listOf(1L, 2L, 3L), callbacksAtUpdate)
+    expectedCallbacks.indices.forEach { index ->
+      assertSame(expectedCallbacks[index], receivedCallbacks[index])
+    }
+  }
 
   @Test
   fun `migrations don't cause ON DELETE CASCADE to trigger`() {

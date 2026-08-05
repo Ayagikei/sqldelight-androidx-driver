@@ -5,13 +5,17 @@ import app.cash.sqldelight.Transacter
 import kotlinx.coroutines.CoroutineDispatcher
 
 expect class CommonCallbackTest() : AndroidxSqliteCallbackTest
+expect class CommonConnectionPoolSetJournalModeTest() : AndroidxDriverConnectionPoolSetJournalModeTest
+expect class CommonConnectionPoolTest() : AndroidxDriverConnectionPoolTest
 expect class CommonConcurrencyTest() : AndroidxSqliteConcurrencyTest
 expect class CommonCreationTest() : AndroidxSqliteCreationTest
 expect class CommonDriverTest() : AndroidxSqliteDriverTest
 expect class CommonDriverOpenFlagsTest() : AndroidxSqliteDriverOpenFlagsTest
 expect class CommonEphemeralTest() : AndroidxSqliteEphemeralTest
+expect class CommonLifecycleRegressionTest() : AndroidxSqliteLifecycleRegressionTest
 expect class CommonMigrationTest() : AndroidxSqliteMigrationTest
 expect class CommonQueryTest() : AndroidxSqliteQueryTest
+expect class CommonSyncApiTest() : AndroidxSqliteSyncApiTest
 expect class CommonTransacterTest() : AndroidxSqliteTransacterTest
 
 expect fun androidxSqliteTestDriver(): SQLiteDriver

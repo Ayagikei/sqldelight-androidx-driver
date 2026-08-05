@@ -71,6 +71,11 @@ public class AndroidxSqliteConfiguration(
     isWal = journalMode == SqliteJournalMode.WAL,
   ),
 ) {
+  /**
+   * [concurrencyModel] is intentionally retained when [journalMode] changes. Runtime journal mode
+   * switches only update [MultipleReadersSingleWriter.isWal]; explicit reader counts and [cacheSize]
+   * remain configuration invariants for the lifetime of the driver.
+   */
   public fun copy(
     isForeignKeyConstraintsEnabled: Boolean = this.isForeignKeyConstraintsEnabled,
     journalMode: SqliteJournalMode = this.journalMode,

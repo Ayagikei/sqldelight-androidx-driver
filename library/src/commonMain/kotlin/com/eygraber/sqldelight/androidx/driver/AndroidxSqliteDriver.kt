@@ -16,6 +16,7 @@ import app.cash.sqldelight.db.SqlSchema
 import kotlinx.atomicfu.locks.ReentrantLock
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
+import kotlinx.atomicfu.locks.withLock
 
 internal expect class TransactionsThreadLocal() {
   internal fun get(): Transacter.Transaction?
@@ -241,6 +242,7 @@ public class AndroidxSqliteDriver @VisibleForTesting(otherwise = PRIVATE) intern
             AndroidxSqliteDatabaseType.Temporary -> false
           },
           configuration = configuration,
+          closeConnection = ::closeConnection,
         )
     }
   }
@@ -252,6 +254,10 @@ public class AndroidxSqliteDriver @VisibleForTesting(otherwise = PRIVATE) intern
 
   private val listenersLock = SynchronizedObject()
   private val listeners = linkedMapOf<String, MutableSet<Query.Listener>>()
+
+  private val closeLock = SynchronizedObject()
+  private var isConnectionPoolClosed = false
+  private var isClosed = false
 
   private val executingDriverHolder by lazy {
     @Suppress("ktlint:standard:max-line-length")
@@ -271,6 +277,7 @@ public class AndroidxSqliteDriver @VisibleForTesting(otherwise = PRIVATE) intern
       onUpdate = onUpdate,
       onOpen = onOpen,
       migrationCallbacks = migrationCallbacks,
+      closeOnInitializationFailure = ::closeResources,
     )
   }
 
@@ -410,8 +417,86 @@ public class AndroidxSqliteDriver @VisibleForTesting(otherwise = PRIVATE) intern
    * are using any of the connections starting from when close is invoked
    */
   override fun close() {
-    statementsCache.values.forEach { it.evictAll() }
-    statementsCache.clear()
-    connectionPool.close()
+    closeResources()
+  }
+
+  private fun closeConnection(connection: SQLiteConnection) {
+    var cleanupFailure: Throwable? = null
+    fun recordCleanupFailure(failure: Throwable) {
+      when(val primary = cleanupFailure) {
+        null -> cleanupFailure = failure
+        else -> primary.addSuppressed(failure)
+      }
+    }
+
+    try {
+      connection.close()
+    } catch(t: Throwable) {
+      recordCleanupFailure(t)
+    }
+
+    statementsCacheLock.withLock {
+      closeStatementCache(connection)?.let(::recordCleanupFailure)
+    }
+
+    cleanupFailure?.let { throw it }
+  }
+
+  private fun closeStatementCache(connection: SQLiteConnection): Throwable? {
+    val cache = statementsCache[connection] ?: return null
+    var cleanupFailure: Throwable? = null
+
+    cache.snapshot().forEach { (identifier, statement) ->
+      try {
+        statement.close()
+        cache.remove(identifier)
+      }
+      catch(t: Throwable) {
+        when(val primary = cleanupFailure) {
+          null -> cleanupFailure = t
+          else -> primary.addSuppressed(t)
+        }
+      }
+    }
+
+    if(cache.size() == 0) statementsCache.remove(connection)
+    return cleanupFailure
+  }
+
+  private fun closeResources() {
+    synchronized(closeLock) {
+      if(isClosed) return
+
+      var cleanupFailure: Throwable? = null
+      fun recordCleanupFailure(failure: Throwable) {
+        when(val primary = cleanupFailure) {
+          null -> cleanupFailure = failure
+          else -> primary.addSuppressed(failure)
+        }
+      }
+
+      statementsCacheLock.withLock {
+        statementsCache.keys.toList().forEach { connection ->
+          closeStatementCache(connection)?.let(::recordCleanupFailure)
+        }
+
+        if(!isConnectionPoolClosed) {
+          try {
+            connectionPool.close()
+            isConnectionPoolClosed = true
+          }
+          catch(t: Throwable) {
+            recordCleanupFailure(t)
+          }
+        }
+
+        if(cleanupFailure == null && statementsCache.isEmpty() && isConnectionPoolClosed) {
+          isClosed = true
+          return
+        }
+      }
+
+      cleanupFailure?.let { throw it }
+    }
   }
 }

@@ -29,6 +29,7 @@ internal class AndroidxSqliteDriverHolder(
   private val onUpdate: SqlDriver.(Long, Long) -> Unit = { _, _ -> },
   private val onOpen: SqlDriver.() -> Unit = {},
   private val migrationCallbacks: Array<out AfterVersion>,
+  private val closeOnInitializationFailure: () -> Unit,
 ) {
   private val executingDriver by lazy {
     AndroidxSqliteExecutingDriver(
@@ -46,68 +47,94 @@ internal class AndroidxSqliteDriverHolder(
   @Suppress("NonBooleanPropertyPrefixedWithIs")
   private val isFirstInteraction = atomic(true)
 
+  private var initializationFailure: Throwable? = null
+
   inline fun <R> ensureSchemaIsReady(block: AndroidxSqliteExecutingDriver.() -> R): R {
     if(isFirstInteraction.value) {
       synchronized(createOrMigrateLock) {
+        initializationFailure?.let { throw it }
+
         if(isFirstInteraction.value) {
-          val executingDriver = AndroidxSqliteExecutingDriver(
-            connectionPool = connectionPool,
-            isStatementCacheSkipped = true,
-            statementCache = mutableMapOf(),
-            statementCacheLock = statementCacheLock,
-            statementCacheSize = 0,
-            transactions = transactions,
-          )
+          try {
+            val executingDriver = AndroidxSqliteExecutingDriver(
+              connectionPool = connectionPool,
+              isStatementCacheSkipped = true,
+              statementCache = mutableMapOf(),
+              statementCacheLock = statementCacheLock,
+              statementCacheSize = 0,
+              transactions = transactions,
+            )
 
-          AndroidxSqliteConfigurableDriver(executingDriver).onConfigure()
+            AndroidxSqliteConfigurableDriver(executingDriver).onConfigure()
 
-          val currentVersion = connectionPool.withWriterConnection {
-            prepare("PRAGMA user_version").use { getVersion ->
-              when {
-                getVersion.step() -> getVersion.getLong(0)
-                else -> 0
-              }
-            }
-          }
-
-          val isCreate = currentVersion == 0L && !migrateEmptySchema
-          if(isCreate || currentVersion < schema.version) {
-            val transacter = object : TransacterImpl(executingDriver) {}
-
-            connectionPool.withForeignKeysDisabled(
-              isForeignKeyConstraintsEnabled = isForeignKeyConstraintsEnabled,
-            ) {
-              transacter.transaction {
+            val currentVersion = connectionPool.withWriterConnection {
+              prepare("PRAGMA user_version").use { getVersion ->
                 when {
-                  isCreate -> schema.create(executingDriver).value
-                  else -> schema.migrate(executingDriver, currentVersion, schema.version, *migrationCallbacks).value
+                  getVersion.step() -> getVersion.getLong(0)
+                  else -> 0
                 }
-
-                val transactionConnection = requireNotNull(
-                  (executingDriver.currentTransaction() as? ConnectionHolder)?.connection,
-                ) {
-                  "SqlDriver.newTransaction() must return an implementation of ConnectionHolder"
-                }
-
-                if(isForeignKeyConstraintsCheckedAfterCreateOrUpdate) {
-                  transactionConnection.reportForeignKeyViolations(
-                    maxMigrationForeignKeyConstraintViolationsToReport,
-                  )
-                }
-
-                transactionConnection.execSQL("PRAGMA user_version = ${schema.version}")
               }
             }
 
-            when {
-              isCreate -> executingDriver.onCreate()
-              else -> executingDriver.onUpdate(currentVersion, schema.version)
+            check(currentVersion <= schema.version) {
+              "Database version $currentVersion is newer than schema version ${schema.version}; " +
+                "downgrades are not supported"
             }
+
+            val isCreate = currentVersion == 0L && !migrateEmptySchema
+            if(isCreate || currentVersion < schema.version) {
+              val transacter = object : TransacterImpl(executingDriver) {}
+
+              connectionPool.withForeignKeysDisabled(
+                isForeignKeyConstraintsEnabled = isForeignKeyConstraintsEnabled,
+              ) {
+                transacter.transaction {
+                  when {
+                    isCreate -> schema.create(executingDriver).value
+                    else -> schema.migrate(
+                      driver = executingDriver,
+                      oldVersion = currentVersion,
+                      newVersion = schema.version,
+                      callbacks = migrationCallbacks,
+                    ).value
+                  }
+
+                  val transactionConnection = requireNotNull(
+                    (executingDriver.currentTransaction() as? ConnectionHolder)?.connection,
+                  ) {
+                    "SqlDriver.newTransaction() must return an implementation of ConnectionHolder"
+                  }
+
+                  if(isForeignKeyConstraintsCheckedAfterCreateOrUpdate) {
+                    transactionConnection.reportForeignKeyViolations(
+                      maxMigrationForeignKeyConstraintViolationsToReport,
+                    )
+                  }
+
+                  transactionConnection.execSQL("PRAGMA user_version = ${schema.version}")
+                }
+              }
+
+              when {
+                isCreate -> executingDriver.onCreate()
+                else -> executingDriver.onUpdate(currentVersion, schema.version)
+              }
+            }
+
+            executingDriver.onOpen()
+
+            isFirstInteraction.value = false
           }
-
-          executingDriver.onOpen()
-
-          isFirstInteraction.value = false
+          catch(t: Throwable) {
+            try {
+              closeOnInitializationFailure()
+            }
+            catch(closeFailure: Throwable) {
+              t.addSuppressed(closeFailure)
+            }
+            initializationFailure = t
+            throw t
+          }
         }
       }
     }
