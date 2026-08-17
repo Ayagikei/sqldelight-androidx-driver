@@ -7,6 +7,9 @@ concurrency:
   group: publish-release-${{ github.repository }}
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 env:
   VERSION_FILE: gradle.properties
   VERSION_EXTRACT_PATTERN: '(?<=version=).+'
@@ -20,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.PUSH_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate versions
         uses: HardNorth/github-version-generate@v1
@@ -116,7 +119,7 @@ jobs:
         id: find_release
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.PUSH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "sync-v${RELEASE_VERSION}" >/dev/null 2>&1; then
             echo "exists=true" >> "${GITHUB_OUTPUT}"
@@ -132,12 +135,12 @@ jobs:
           body: ${{ steps.build_changelog.outputs.changelog }}
           name: Sync driver ${{ env.RELEASE_VERSION }}
           tag: sync-v${{ env.RELEASE_VERSION }}
-          token: ${{ secrets.PUSH_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref_name }}
-          token: ${{ secrets.PUSH_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare next dev version
         id: prepare_next_dev
@@ -173,4 +176,5 @@ jobs:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.ARTIFACT_SIGNING_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.ARTIFACT_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./gradlew publishAllPublicationsToMavenCentralRepository -Pversion=${{ env.RELEASE_VERSION }}
